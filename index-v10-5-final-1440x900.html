@@ -1,0 +1,1112 @@
+<html>
+
+<head>
+<title>Konoha's VR - Project</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<!-- <script type="text/javascript" src="js/three.js"></script> -->
+<script type="text/javascript" src="js/three.min.js"></script>
+
+<script type="text/javascript" src="js/loaders/DDSLoader.js"></script>
+<script type="text/javascript" src="js/loaders/MTLLoader.js"></script>
+<script type="text/javascript" src="js/loaders/OBJLoader.js"></script>
+<script type="text/javascript" src="js/loaders/OBJMTLLoader.js"></script>
+
+<script type="text/javascript" src="js/libs/dat.gui.min.js"></script>
+
+<script type="text/javascript" src="js/maze-utils.js"></script>
+
+<style>
+  
+  body
+  {
+    text-align: center;
+  }
+
+  .container
+  {
+    position: relative;
+  }
+  
+  /*#overlay_canvas
+  {
+    position: absolute;
+    left: 50px;
+    top: 50px;
+    color: #ffffff;
+    font-family: 'OCR A STD';
+    font-size: 20px; 
+  }
+  
+  #radar_canvas
+  {
+    color: #ffffff;
+  }*/
+
+  #overlay_health
+  {
+    position: absolute;
+    top: 5.55%;
+    left: 41%;
+    width: 19.1%;
+    height: 2.7%;
+    font-family: 'OCR A STD';
+    font-size: 150%;
+    color: #0088bb;
+  }
+  
+  #overlay
+  {
+    position: absolute;
+    left: 85.72%;
+    top: 91%;
+    color: #ffffff;
+    font-family: 'OCR A STD';
+    font-size: 150%;
+  }
+  
+  #overlay_ammo
+  {
+    position: absolute;
+    left: 86.41%;
+    top: 9.10%;
+  }
+  
+  #overlay_reload{
+    position: absolute;
+    left: 37.20%;
+    top: 25.21%;
+    color: #ff0000;
+    font-family: 'OCR A STD';
+    font-size: 500%;
+    visibility: hidden;
+  }
+  
+  .bullet
+  {
+    width: 0.33em;
+    height: 1.25em;
+    background-color: #0088bb;
+    display: inline-block;
+    margin: 0.12em;
+  }
+  
+  canvas {
+    width: 100%;
+    height: 100%;
+    border: 1px solid black;
+  }
+</style>
+
+<script type="text/javascript">
+
+    var gamepad = 0;
+    function initGamepad()
+    {
+      window.addEventListener("gamepadconnected", function()
+      {
+        gamepad = navigator.getGamepads()[0];
+        console.log("Gamepad connected at index " + gamepad.index + ": " + gamepad.id + ". It has " + gamepad.buttons.length + " buttons and " + gamepad.axes.length + " axes.");
+      });
+      window.addEventListener("gamepaddisconnected", function(e)
+      {
+        console.log("Waiting for gamepad.");
+        gamepad = 0;
+      });
+    }
+
+
+    // GUI
+
+    var params = {
+        'az0': -20.0,
+        'el0': 30.0,
+        'd0' : 8.0
+    }
+    var gui;
+    function initGUI() {
+        gui = new dat.GUI({ autoPlace: true })
+
+        gui.add(params, 'az0').min(-180).max(+180).listen();
+        gui.add(params, 'el0').min(-90).max(+90).listen();
+        gui.add(params, 'd0').min(+1).max(+100).listen();
+
+        dat.GUI.toggleHide(); // remove to see GUI
+    }
+
+
+    // Mouse controls
+
+    var mouseState = 0
+    var mouse = new THREE.Vector2()
+
+    function initMouse(canvas) {
+        canvas.onmousemove = handleMouseMove;
+        canvas.onmousedown = handleMouseDown;
+        canvas.onmouseleave = function() {mouseState = 0; mouse.x=0; mouse.y=0};
+    }
+    function handleMouseDown(event) {
+        // Get mouse position in normalized coordinates [-1, +1]
+        var rect = event.target.getBoundingClientRect()
+        mouse.x = (event.clientX - rect.left) / (rect.right-rect.left) * 2 - 1
+        mouse.y = -(event.clientY - rect.top) / (rect.bottom-rect.top) * 2 + 1
+        console.log(mouse)
+    }
+
+    function handleMouseMove(event) {
+    }
+
+
+    // Keyboard controls
+
+    var currentlyPressedKeys = {};
+
+    function initKeyboard(canvas, onKeyDown, onKeyUp) {
+        // add tabindex attribute to canvas to allow it getting keyboard focus
+        // Same as declaring <canvas tag='webgl-canvas' tabindex='1'></canvas> in HTML
+        canvas.setAttribute('tabindex',1);
+        // Give focus to canvas by default and each time mouse enters
+        // to improve user experience by handling keyboard out of the box
+        canvas.focus();
+        canvas.onmouseenter = (function () {canvas.focus()});
+        //canvas.onmouseleave = (function () {canvas.blur()});
+
+        canvas.onkeydown = handleKeyDown;
+        canvas.onkeyup = handleKeyUp;
+    }
+    function handleKeyDown(event) {
+        var keyCode = event.keyCode;
+        currentlyPressedKeys[keyCode] = true;
+
+        // Display pressed keys for debugging. Comment if too verbose
+        console.log('KeyDown: keycode = '+keyCode.toString());
+
+        if (keyCode == 37 || keyCode == 38 || keyCode == 39 || keyCode == 40) {
+            // Arrow keys: prevent default handling (i.e. avoid scrolling)
+            event.preventDefault();
+            // Arrows are handled using polling in handleKeys
+        } else if (event.key == 'v') {
+            // Change current camera
+            cameraId = (cameraId+1)%3
+            camera = cameras[cameraId]
+            console.log('cameraId = '+cameraId.toString()+", camera = ",cameras[cameraId])
+            //var messagebox = document.getElementById("messagebox");
+            //messagebox.innerHTML = 'Camera '+cameraId
+        }
+    }
+    
+    var reloading = false;
+    function reload_weapon()
+    {
+      for(var i = 0; i < magazine_div.length; i++)
+      {
+        magazine_div[i].style.backgroundColor = "#0088bb";
+      }
+      reload_sound.play();
+      reloading = true;
+      setTimeout(function(){ magazine = 14; reloading = false;}, 1000);
+    }
+
+    var trigger_release = true;
+    function handleKeyUp(event) {
+        currentlyPressedKeys[event.keyCode] = false;
+    }
+
+    var all_bullets = new Array(0), bullet = 0, blaster;
+    var last_fire = 0, last_target = 0;
+    function handleKeys() {
+        if(gamepad != 0)
+        {
+          var axis = [gamepad.axes[2], gamepad.axes[3], gamepad.axes[0], gamepad.axes[1]];
+        }
+        else
+          var axis = [1,-1,1,-1];
+
+        /* Camera 0 controls */
+        if (currentlyPressedKeys[73] /* I */) { params.el0 += 2 }
+        if (currentlyPressedKeys[75] /* K */) { params.el0 -= 2 }
+        if (currentlyPressedKeys[74] /* J */) { params.az0 -= 2 }
+        if (currentlyPressedKeys[76] /* L */) { params.az0 += 2 }
+        if (currentlyPressedKeys[85] /* U */) { params.d0 *= 1.05 }
+        if (currentlyPressedKeys[79] /* O */) { params.d0 /= 1.05 }
+        daz = 0  // Rotation control
+        if (currentlyPressedKeys[65] /* A */) { daz = 1; }
+        else if(axis[0] < -0.10 /* LS-LT */) { daz = -axis[0]; }
+        if (currentlyPressedKeys[68] /* D */) { daz = -1; }
+        else if (gamepad != 0 && axis[0] > 0.10 /* LS-RT */) { daz = -axis[0]; }
+        daphi = 0;
+        if (currentlyPressedKeys[87] && aphi > -85  /* W */) { daphi = -1; }
+        else if (gamepad != 0 && axis[1] < -0.10 && aphi > -85 /* LS-UP */) { daphi = axis[1]; }
+        if (currentlyPressedKeys[83] && aphi < 85 /* S */) { daphi = 1; }
+        else if (gamepad != 0 && axis[1] > 0.10 && aphi < 85 /* LS-DN */) { daphi = axis[1]; }
+        if (params.el0>90) params.el0=90;
+        else if (params.el0<-90) params.el0=-90;
+        if (params.az0>180) params.az0-=360;
+        else if (params.az0<-180) params.az0+=360;
+        if((currentlyPressedKeys[82] /* R */ || gamepad != 0 && gamepad.buttons[15].pressed) && magazine < 14) { reload_weapon(); }
+
+        /* Hero control: BEGIN */
+        dx = 0; dy = 0;  // Position control
+        if (currentlyPressedKeys[38] /* Up */) {
+            dx = -Math.sin(degToRad(az));
+            dy = Math.cos(degToRad(az));
+        }
+        else if(gamepad != 0 && axis[3] < -0.1 /* LS-UP */)
+        {
+          dx = -Math.sin(degToRad(az)) * (-axis[3]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+          dy = Math.cos(degToRad(az)) * (-axis[3]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+        }
+
+        if (currentlyPressedKeys[40] /* Down */) {
+            dx = Math.sin(degToRad(az))
+            dy = -Math.cos(degToRad(az))
+        }
+        else if(gamepad != 0 && axis[3] > 0.1 /* LS-DN */)
+        {
+          dx = -Math.sin(degToRad(az)) * (-axis[3]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+          dy = Math.cos(degToRad(az)) * (-axis[3]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+        }
+
+        if (currentlyPressedKeys[37] /* LEFT */) {
+          dx -= Math.cos(degToRad(az))
+          dy -= Math.sin(degToRad(az))
+        }
+        else if(gamepad != 0 && axis[2] < -0.1 /* LS-LT */)
+        {
+          dx -= Math.cos(degToRad(az)) * (-axis[2]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+          dy -= Math.sin(degToRad(az)) * (-axis[2]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+        }
+
+        if (currentlyPressedKeys[39] /* RIGHT */) {
+          dx += Math.cos(degToRad(az));
+          dy += Math.sin(degToRad(az));
+        }
+        else if(gamepad != 0 && axis[2] > 0.1 /* LS-RT */)
+        {
+          dx += Math.cos(degToRad(az)) * (axis[2]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+          dy += Math.sin(degToRad(az)) * (axis[2]) * (gamepad != 0 && gamepad.buttons[1].pressed ? 2.5 : 1);
+        }
+        
+        if (currentlyPressedKeys[16] || gamepad != 0 && gamepad.buttons[8].pressed) /* Left Trigger - Aim */
+        {
+          aim = true;
+          daphi /= 4;
+          daz /= 4;
+          dx /= 2;
+          dy /= 2;
+        }
+        else
+        {
+          aim = false;
+        }
+        
+        /* Hero control: END */
+
+        if (currentlyPressedKeys[32] || gamepad != 0 && gamepad.buttons[9].pressed /* Space or Right Trigger*/)
+        {
+          now = new Date().getTime()/1000;
+          if(now - last_fire < 0.3 || magazine < 1 || reloading || !trigger_release)
+            return;
+          blaster.pause();
+          blaster.currentTime = 0.1;
+          var temp_material = new THREE.MeshBasicMaterial({color: 0xff0000});
+          var temp_geom = new THREE.SphereGeometry(0.025, 10, 10);
+          var temp_bullet = new THREE.Mesh(temp_geom, temp_material);
+          var bullet_posx = posx+0.28*Math.sin(degToRad(-aphi))*Math.sin(degToRad(az));
+          var bullet_posy = posy+0.28*Math.sin(degToRad(aphi))*Math.cos(degToRad(az));
+          var bullet_posz = 0.50+0.28*Math.cos(degToRad(-aphi));
+          bullet =
+          {
+            startx: bullet_posx,
+            starty: bullet_posy,
+            startz: bullet_posz,
+            bullet_mesh: temp_bullet,
+            direction: az,
+            direction_phi: -aphi,
+            start_time: new Date().getTime() / 1000,
+            collisioned: false
+          };
+          last_fire = bullet.start_time;
+          bullet.bullet_mesh.name = "bullet" + all_bullets.length;
+          bullet.bullet_mesh.position.x = bullet.startx;
+          bullet.bullet_mesh.position.y = bullet.starty;
+          bullet.bullet_mesh.position.z = bullet.startz;
+          all_bullets.push(bullet);
+          scene.add(bullet.bullet_mesh); // add last bullet to the scene.
+          blaster.play();
+          magazine_div[magazine-1].style.backgroundColor = "#ffffff";
+          magazine--;
+          trigger_release = false;            
+        }
+        else
+          trigger_release = true;
+
+        /* WARNING: Setting cameras and hero new position is done in animate() */
+
+        if (gamepad != 0 && gamepad.buttons[0].pressed) {
+            // Change current camera
+            cameraId = (cameraId+1)%3;
+            camera = cameras[cameraId];
+            console.log('cameraId = '+cameraId.toString()+", camera = ",cameras[cameraId]);
+            //var messagebox = document.getElementById("messagebox");
+            //messagebox.innerHTML = 'Camera '+cameraId
+        }
+    }
+
+    var hit = false;
+    function no_bullet_collisions(temp)
+    {
+      hit = false;
+
+      /* Check collisions for walls and floor */
+
+      var pos = new THREE.Vector3(temp.bullet_mesh.position.x, temp.bullet_mesh.position.y, temp.bullet_mesh.position.z);
+      var dir = new THREE.Vector3(bullet_dx,0,0);
+      var raycaster = new THREE.Raycaster(pos, dir, 0, 1);
+      var intersects = raycaster.intersectObject( wallMesh );
+      intersects.length > 0 && intersects[0].distance < 0.3 ? temp.collisioned = true : bullet_dx;
+
+      var pos = new THREE.Vector3(temp.bullet_mesh.position.x, temp.bullet_mesh.position.y, temp.bullet_mesh.position.z);
+      var dir = new THREE.Vector3(0, bullet_dy, 0);
+      var raycaster = new THREE.Raycaster(pos, dir, 0, 1);
+      var intersects2 = raycaster.intersectObject( wallMesh );
+      !temp.collisioned && intersects2.length > 0 && intersects2[0].distance < 0.3 ? temp.collisioned = true : bullet_dy;
+
+      var pos = new THREE.Vector3(temp.bullet_mesh.position.x, temp.bullet_mesh.position.y, temp.bullet_mesh.position.z);
+      var dir = new THREE.Vector3(0, 0, bullet_dz);
+      var raycaster = new THREE.Raycaster(pos, dir, 0, 1);
+      var intersects2 = raycaster.intersectObject( floorMesh );
+      !temp.collisioned && intersects2.length > 0 && intersects2[0].distance < 0.3 ? temp.collisioned = true : bullet_dy;
+
+      /* Check collisions for targets */
+
+      for(var i = 0; i < targets.length; i++)
+      {
+        var temp_target = targets[i].targetMesh
+        if(Math.abs(temp.bullet_mesh.position.x - temp_target.position.x) < (0.7*targets[i].targetSize) && Math.abs(temp.bullet_mesh.position.y - temp_target.position.y) < (0.7*targets[i].targetSize) && Math.abs(temp.bullet_mesh.position.z - temp_target.position.z) < 0.7*targets[i].targetSize )
+        {
+          console.log("hit" + temp_target.id);
+          hit = true;
+          temp.collisioned = true;
+          targets[i].targetHP--;
+          if(targets[i].targetHP > 0)
+          {
+            // blaster.pause();
+            // blaster.currentTime = 0;
+            target_hit.pause();
+            target_hit.currentTime = 0;
+            target_hit.play();
+          }
+        }
+      }
+
+      if(temp.collisioned || hit)
+      {
+        // blaster.pause();
+        // blaster.currentTime = 0;
+        blaster_collision.pause();
+        blaster_collision.currentTime = 0;
+        blaster_collision.play();
+        return false;
+      }
+      return true;
+    }
+
+    // Animation
+    var step = 0, health = 100, health_posy = 0, magazine = 14;
+    var lastTime = 0, elapsed = 0
+    var aim = false, aim_rate_x = 0, aim_rate_z = 0, aim_rate_y = 0;
+    var in_range_targets = new Array(0), last = 0;
+    function animate() {
+        var timeNow = new Date().getTime();
+        if (lastTime != 0) { elapsed = (timeNow - lastTime)/1000; }
+        lastTime = timeNow;
+
+        /* Hero collision detection */
+        var d2 = dx*dx + dy*dy
+        if (d2>0) {
+            // If we are moving, check for collisions
+            // TODO
+            var pos = new THREE.Vector3(posx,posy,0.5)
+            var dir = new THREE.Vector3(dx,0,0)
+            var raycaster = new THREE.Raycaster(pos, dir, 0, 1)
+            var intersects = raycaster.intersectObject( wallMesh )
+            intersects.length > 0 ? (intersects[0].distance < 0.3 ? dx = 0 : dx) : dx;
+
+            var dir = new THREE.Vector3(0, dy, 0);
+            var raycaster = new THREE.Raycaster(pos, dir, 0, 1);
+            var intersects2 = raycaster.intersectObject( wallMesh );
+            intersects2.length > 0 ? (intersects2[0].distance < 0.3 ? dy = 0 : dy) : dy;
+        }
+
+        /* Update Hero Position */
+        var velocity = 1/0.4      // Move 1 unit in 0.4s
+        var anglevelocity = 360/3 // Turn 360 deg in 2s
+        posx += dx * elapsed * velocity
+        posy += dy * elapsed * velocity
+        az   += daz * elapsed * anglevelocity
+        aphi += daphi * elapsed * anglevelocity
+
+        hero.position.set(posx, posy, 0.5);
+        //hero.rotation.set(Math.PI/2, Math.PI/2, Math.PI/2,"ZXY");
+        hero.rotation.set(degToRad(aphi+90), 0*Math.PI/2, degToRad(az+180),"ZXY");
+
+        // for(var i = 0; i < hero.children.length; i++)
+        // hero.children[4].position.y = 20*Math.cos(degToRad(10*step++));
+
+        /* Cameras update */
+
+        var az0 = params.az0, el0 = params.el0, d0 = params.d0
+
+        // Uncomment to look at maze center instead of origin
+        //var target = new THREE.Vector3(maze.w/2,maze.h/2,0)
+        var target = new THREE.Vector3(hero.position.x,hero.position.y,hero.position.z)
+        cameras[0].position.set(
+                target.x-d0*Math.cos(degToRad(el0))*Math.sin(degToRad(az0)),
+                target.y-d0*Math.cos(degToRad(el0))*Math.cos(degToRad(az0)),
+                target.z+d0*Math.sin(degToRad(el0)))
+        cameras[0].up.set(0,0,1)
+        cameras[0].lookAt(target)
+        cameras[0].updateMatrixWorld()
+        camerasHelpers[0].update()
+
+        // cameras[1].position.set(posx+0.38*Math.sin(degToRad(-aphi))*Math.sin(degToRad(az)), posy+0.38*Math.sin(degToRad(aphi))*Math.cos(degToRad(az)), 0.50+0.38*Math.cos(degToRad(aphi)));
+        var plane_distance_xaxis = -0.18;
+        var plane_distance_yaxis = -0.18;
+        var plane_distance_zaxis = 0.37888;
+        if(aim)
+        {
+          if(plane_distance_xaxis+aim_rate_x < 0)
+            aim_rate_x += 0.02;
+          if(plane_distance_zaxis-aim_rate_z > 0.335)
+            aim_rate_z += 0.009;
+          // if(aim_rate_y < 0.1)
+          //   aim_rate_y += 0.01
+          if(cameras[1].zoom < 15)
+            cameras[1].zoom += 2;
+          cameras[1].updateProjectionMatrix();
+        }
+        else if(!aim){
+          if(plane_distance_xaxis+aim_rate_x > -0.18)
+            aim_rate_x -= 0.02;
+          if(plane_distance_zaxis-aim_rate_z < 0.3788)
+            aim_rate_z -= 0.009;
+          // if(aim_rate_y > 0)
+          //   aim_rate_y -= 0.01;
+          if(cameras[1].zoom > 1)
+            cameras[1].zoom -= 2;
+          cameras[1].updateProjectionMatrix();
+        }
+        cameras[1].position.set(posx+(plane_distance_xaxis+aim_rate_x)*Math.cos(degToRad(-az))+(plane_distance_zaxis-aim_rate_z)*Math.sin(degToRad(-aphi))*Math.sin(degToRad(az))+(plane_distance_yaxis+aim_rate_y)*Math.sin(degToRad(-az))*Math.cos(degToRad(-aphi)),
+                               posy+(plane_distance_zaxis-aim_rate_z)*Math.sin(degToRad(aphi))*Math.cos(degToRad(az))+(plane_distance_xaxis+aim_rate_x)*Math.sin(degToRad(az))+(plane_distance_yaxis+aim_rate_y)*Math.cos(degToRad(az))*Math.cos(degToRad(-aphi)),
+                               0.50+(plane_distance_zaxis-aim_rate_z)*Math.cos(degToRad(aphi))+(plane_distance_yaxis+aim_rate_y)*Math.sin(degToRad(-aphi)));
+        cameras[1].updateMatrixWorld();
+
+        // Euler angles in ZXY order:
+        // First rotate az degrees around Z for the direction, then
+        // rotate 90 deg around X to get the direction Z_camera pointing backward
+        // cameras[1].rotation.set(degToRad(90),0,degToRad(az),"ZXY")
+        cameras[1].rotation.set(degToRad(-aphi+90),0,degToRad(az),"ZXY")
+        cameras[1].updateMatrixWorld()
+        camerasHelpers[1].update()
+        
+        if(magazine < 1 && !reloading)
+          reload_div.style.visibility = "visible";
+        else if(game_over === 0)
+          reload_div.style.visibility = "hidden";
+
+        if(all_bullets.length != 0)
+        {
+          var time_now = new Date().getTime()/1000;
+          for(var i = 0; i < all_bullets.length; i++)
+          {
+            var temp = all_bullets[i];
+            bullet_dx = -Math.sin(degToRad(temp.direction))*Math.cos(degToRad(temp.direction_phi));
+            bullet_dy = Math.cos(degToRad(temp.direction))*Math.cos(degToRad(temp.direction_phi));
+            bullet_dz = Math.sin(degToRad(temp.direction_phi));
+            collision_test_successful = no_bullet_collisions(temp);
+            if(time_now - temp.start_time > 1.0)
+            {
+              var selected = scene.getObjectByName(all_bullets[i].bullet_mesh.name);
+              scene.remove(selected);
+              all_bullets.splice(i, 1);
+            }
+            else if(temp.collisioned)
+            {
+              //alert("collisioned");
+              var selected = scene.getObjectByName(all_bullets[i].bullet_mesh.name);
+              scene.remove(selected);
+              all_bullets.splice(i, 1);
+            }
+            else
+            {
+              temp.bullet_mesh.position.x += bullet_dx * elapsed * velocity*15;
+              temp.bullet_mesh.position.y += bullet_dy * elapsed * velocity*15;
+              temp.bullet_mesh.position.z += bullet_dz * elapsed * velocity*15;
+            }
+          }
+        }
+
+        if(health <= 0 && game_over != -1)
+        {
+          console.log("You have lost the game!! :(");
+          reload_div.innerHTML = "GAME OVER";
+          reload_div.style.visibility = "visible";
+          game_over = -1;
+        }
+        
+
+        var now = new Date().getTime() / 1000;
+        if((targets.length < 20 && now - last_target > 2.0) && game_over === 0)
+        {
+          var color, random_color = Math.random();
+          var target_size, hp;
+          if(random_color >= .97)
+          {
+            color = new THREE.Color(1, 1, 1);       // white target: ultimate, restores life, 50x score     [97-100%]
+            hp = 5;
+          }
+          else if(random_color >= .85)
+          {
+            color = new THREE.Color(1, 0, 0);       // red target: 20x score, increases life 4x              [85-96%]
+            hp = 5;
+          }
+          else if(random_color >= .60)
+          {
+            color = new THREE.Color(1, 1, 0);       // yellow target: 10x score, increases life 2x           [60-84%]
+            hp = 4;
+          }
+          else if(random_color >= .40)
+          {
+            color = new THREE.Color(0, 1, 0);       // green target: 5x score, increases life 2x            [40-59%]
+            hp = 3;
+          }
+          else if(random_color >= .25)
+          {
+            color = new THREE.Color(1, 0, 1);       // magenta target: 2x score, no increases life          [25-39%]
+            hp = 2;
+          }
+          else
+          {
+            color = new THREE.Color(0, 0, 1);       // blue target: regular target, 1x score, no life bonus [0-24%]
+            hp = 1;
+          }
+           
+          if(score > 1000)
+            target_size = .35;
+          else if(score > 500)
+            target_size = .5;
+          else if(score > 250)
+            target_size = .6;
+          else if(score > 75)
+            target_size = .8;
+          else
+            target_size = 1;
+          var random_x = Math.random()*w;
+          var random_y = Math.random()*h;
+          var random_z = Math.random()*d/2;
+          target_material = new THREE.MeshPhongMaterial({color: color, shininess: 100, specular: 0xff0000, wireframe: false, map: target_texture, opacity: 0.85, transparent: true});
+          target_geom = new THREE.BoxGeometry(target_size, target_size, target_size);
+          var new_target = new THREE.Mesh(target_geom, target_material);
+          new_target.position.x = random_x;
+          new_target.position.y = random_y;
+          new_target.position.z = random_z;
+          new_target.name = "target"+target_count++;
+          single_target =
+          {
+            targetHP: hp,
+            targetMesh: new_target,
+            targetSize: target_size,
+            motion: 0,
+            create_time: now
+          };
+          last_target = now;
+          targets.push(single_target);
+          scene.add(targets[targets.length-1].targetMesh);
+        }
+        
+        in_range_targets = new Array(0);
+        for(var i = 0; i < targets.length; i++)
+        {
+          var temp = targets[i];
+          if(temp.targetHP <= 0 && hit)
+          {
+            // console.log(temp.targetMesh.name);
+            var selected = scene.getObjectByName(temp.targetMesh.name);
+            scene.remove(selected);
+            // blaster.pause();
+            // blaster.currentTime = 0.1;
+            target_destroy.pause();
+            target_destroy.currentTime = 0;
+            target_destroy.play();
+            // targets.targetHP = -1;
+            switch(targets[i].targetMesh.material.color.getHex())
+            {
+              case 0xffffff:
+                health = 100;
+                health_posy = 0;
+                score += 50;
+                break;
+              case 0xff0000:
+                health += 20;
+                health_posy += 15;
+                score += 20;
+                break;
+              case 0xffff00:
+                health += 10;
+                health_posy += 7.5;
+                score += 10;
+                break;
+              case 0x00ff00:
+                health += 5;
+                health_posy += 7.5;
+                score += 5;
+                break;
+              case 0xff00ff:
+                score += 2;
+                break;
+              case 0x0000ff:
+                score += 1;
+                break;
+            }
+            health = health > 100 ? 100 : health;
+            score_div.innerHTML = score.toString();
+            targets.splice(i, 1);
+          }
+          else
+          {
+            temp.targetMesh.rotation.x += 0.01;
+            temp.targetMesh.rotation.z += 0.01;
+            
+            /* get info from targets so that it can be plotted into the HUD radar */
+            
+            var distance_y = hero.position.y - temp.targetMesh.position.y;
+            var distance_x = hero.position.x - temp.targetMesh.position.x;
+            var distance_away_from_enemy = Math.sqrt(distance_x*distance_x+distance_y*distance_y);
+            
+            if(distance_away_from_enemy < 5)
+            {
+              var enemy_angle = Math.acos(distance_y/distance_away_from_enemy);
+              enemy_angle = Math.round(180 * enemy_angle/Math.PI);
+              var radar_dot = 
+              {
+                angle: enemy_angle,
+                radius: distance_away_from_enemy,
+                name: temp.targetMesh.name,
+                sprite: 1   
+              }
+              in_range_targets.push(radar_dot); 
+              
+            }
+          }
+        }
+        
+        var now = new Date().getTime()/1000; 
+        if(health_bar != 0 && health > 0 && (now - last > 0.25))
+        {
+          last = now;
+          health -= 1;
+          if(health > 74)
+          {
+            health_bar.style.color = "#0088bb";
+          }
+          else if(health > 24)
+          {
+            health_bar.style.color = "#ffff00";
+          }
+          else
+          {
+            health_bar.style.color = "#ff0000";
+          }
+        }
+        health_bar.innerHTML = "Health: " + health.toString();
+    }
+
+    function start_stop()
+    {
+      pause = !pause;
+      !pause ? last_frame = requestAnimationFrame(tick) : cancelAnimationFrame(last_frame);
+    }
+
+    function tick() {
+        handleKeys();
+        animate();
+        renderer.clear();
+        renderer.render(scene, camera);
+        renderer.clearDepth();
+        renderer.render(sceneHUD, cameraHUD);
+
+        !pause ? last_frame = requestAnimationFrame(tick) : cancelAnimationFrame(last_frame);
+    }
+
+
+    // Global variables for the Model
+
+    /* Plane dimensions */
+    var d = 15, w = 30, h = 30; //26
+    /* Hero position */
+    var posx = 0, posy = 0, az = 0, aphi = 0;
+    /* Hero motion */
+    var dx=0,dy=0,daz=0, daphi = 0;
+
+
+    createXYTile = function(x,y,z,materialIndex) {
+        var geometry = new THREE.Geometry()
+
+        var nvertices = geometry.vertices.length
+        geometry.vertices.push(
+            new THREE.Vector3( x  , y  , z ),
+            new THREE.Vector3( x+1, y  , z ),
+            new THREE.Vector3( x+1, y+1, z ),
+            new THREE.Vector3( x  , y+1, z )
+        );
+
+        var nfaces = geometry.faces.length
+        geometry.faces.push(
+            new THREE.Face3( nvertices, nvertices+1, nvertices+2, null, null, materialIndex),
+            new THREE.Face3( nvertices, nvertices+2, nvertices+3, null, null, materialIndex)
+        )
+
+        // TODO: append UV coordinates to each vertex in each face
+        //geometry.faceVertexUvs[0]
+        geometry.faceVertexUvs[0].push( [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,0 ), new THREE.Vector2( 1,1 )],
+                                        [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,1 ), new THREE.Vector2( 0,1 )]);
+        return geometry;
+    }
+    createXZTile = function(x,y,z,materialIndex) {
+      var geometry = new THREE.Geometry()
+
+      // TODO
+
+      var nvertices = geometry.vertices.length
+      geometry.vertices.push(
+          new THREE.Vector3( x  , y  , z   ),
+          new THREE.Vector3( x+1, y  , z   ),
+          new THREE.Vector3( x+1, y  , z+1 ),
+          new THREE.Vector3( x  , y  , z+1 )
+      );
+
+      var nfaces = geometry.faces.length
+      geometry.faces.push(
+          new THREE.Face3( nvertices, nvertices+1, nvertices+2, null, null, materialIndex),
+          new THREE.Face3( nvertices, nvertices+2, nvertices+3, null, null, materialIndex)
+      )
+
+      // TODO: append UV coordinates to each vertex in each face
+      //geometry.faceVertexUvs[0]
+      geometry.faceVertexUvs[0].push( [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,0 ), new THREE.Vector2( 1,1 )],
+                                      [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,1 ), new THREE.Vector2( 0,1 )]);
+      return geometry;
+    }
+    createYZTile = function(x,y,z,materialIndex) {
+      var geometry = new THREE.Geometry()
+
+      // TODO
+
+      var nvertices = geometry.vertices.length
+      geometry.vertices.push(
+          new THREE.Vector3( x  , y  , z   ),
+          new THREE.Vector3( x  , y+1, z   ),
+          new THREE.Vector3( x  , y+1, z+1 ),
+          new THREE.Vector3( x  , y  , z+1 )
+      );
+
+      var nfaces = geometry.faces.length
+      geometry.faces.push(
+          new THREE.Face3( nvertices, nvertices+1, nvertices+2, null, null, materialIndex),
+          new THREE.Face3( nvertices, nvertices+2, nvertices+3, null, null, materialIndex)
+      )
+
+      // TODO: append UV coordinates to each vertex in each face
+      //geometry.faceVertexUvs[0]
+      geometry.faceVertexUvs[0].push( [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,0 ), new THREE.Vector2( 1,1 )],
+                                      [new THREE.Vector2( 0,0 ), new THREE.Vector2( 1,1 ), new THREE.Vector2( 0,1 )]);
+      return geometry;
+    }
+
+    createFloorGeometry = function(materialIndex) {
+        geometry = new THREE.Geometry();
+
+        // TODO
+
+        for(var i = 0; i < w; i++)
+          for(var j = 0; j < h; j++)
+          {
+            var tile = createXYTile(i, j, 0, materialIndex);
+            geometry.merge(tile, new THREE.Matrix4(), 0);
+          }
+
+        geometry.computeFaceNormals();
+        geometry.computeVertexNormals();
+        return geometry;
+    }
+    createWallGeometry = function(materialIndex) {
+        geometry = new THREE.Geometry();
+
+        // TODO
+        for(var k = 0; k < d; k++)
+          for(var i = 0; i < w; i++)
+          {
+            if(i === 0 || i === w-1)
+              for(var j = 0; j < h; j++)
+              {
+                var tile = createYZTile(i === 0 ? i : i+1, j, k, materialIndex);
+                geometry.merge(tile, new THREE.Matrix4(), 0);
+              }
+          }
+        for(var k = 0; k < d; k++)
+          for(var i = 0; i < h; i++)
+          {
+            if(i === 0 || i === h-1)
+              for(var j = 0; j < w; j++)
+              {
+                var tile = createXZTile(j, i === 0 ? i : i+1, k, materialIndex);
+                geometry.merge(tile, new THREE.Matrix4(), 0);
+              }
+          }
+
+        geometry.computeFaceNormals();
+        geometry.computeVertexNormals();
+        return geometry;
+    }
+
+
+    // Global variables for the View
+
+    var renderer;
+    var scene, camera, sceneHUD, cameraHUD;
+    var cameraId;
+
+    var last_frame, pause = false, target_count = 0, score = 0;
+    var cameras = [];
+    var camerasHelpers = [];
+    var axisHelper, plane;
+    var hero, health_bar = 0;
+    var planeMesh, tileMesh, tileMesh2, tileMesh3, floorMesh, wallMesh, cellingMesh;
+    var targets = new Array(0), single_target, target_material, target_geom, target_mesh, target_destroy, target_hit, game_over = 0;
+    var ctx, crosshair, crosshair_texture, target_texture, blaster_collision;
+    var score_div, magazine_div = new Array(14), reload_div, reload_sound;
+
+    function webGLStart() {
+
+        /* Initialize WebGL renderer and create scene */
+        var canvas = document.getElementById("canvas");
+        renderer = new THREE.WebGLRenderer({
+            'canvas': canvas,
+            maxLights: 6,
+            preserveDrawingBuffer: true,
+            shadowMapEnabled: true  // Remove if performance issues
+            });
+            
+        renderer.setClearColor(0x000000);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        window.scrollTo(10,10);
+        window.onkeydown = function(e)
+        {
+          return !(e.keyCode == 32);
+        };
+        renderer.autoClear = false;
+
+        scene = new THREE.Scene();
+        sceneHUD = new THREE.Scene();
+        cameraHUD = new THREE.OrthographicCamera( - canvas.width / 2, canvas.width / 2, canvas.height / 2, - canvas.height / 2, 1, 10);
+        cameraHUD.position.z = 10;
+
+        // blaster = new Audio("LaserBlasts.mp3");
+        blaster = new Audio("sounds/DMR Shot 1.mp3");
+        blaster_collision = new Audio("sounds/Metroid Prime - Power Beam/Power Beam - Impact.mp3");
+        target_destroy = new Audio("sounds/0xC9.wav");
+        target_hit = new Audio("sounds/0xC0.wav");
+        reload_sound = new Audio("sounds/Halo_4_UNSC_DMR_Reload.mp3");
+        target_texture = THREE.ImageUtils.loadTexture("textures/target_gs.png");
+        // health_bar_texture = THREE.ImageUtils.loadTexture("textures/health_bar_1.png", undefined, createHUD_heath_bar);
+        crosshair_texture = THREE.ImageUtils.loadTexture("textures/h3hud_edit_2.png", undefined, createHUD_crosshair);
+
+        /* Create cameras */
+        // Note: look in animate() for the setting of cameras position and orientation
+        cameras[0] = new THREE.PerspectiveCamera( 75, canvas.width / canvas.height, 0.005, 100);
+        cameras[1] = new THREE.PerspectiveCamera( 100, canvas.width / canvas.height, 0.005, 100);
+        var W = Math.max(w, h)
+        cameras[2] = new THREE.OrthographicCamera( -1, W+1, W+1, -1, -10, 10);
+
+        // Define current camera
+        cameraId = 1
+        camera = cameras[cameraId]
+
+        /* Helpers: additional objects in the scene useful for debugging */
+        // Invisible by default
+
+        for (var i=0; i<cameras.length; i++) {
+            camerasHelpers[i] = new THREE.CameraHelper(cameras[i])
+            camerasHelpers[i].visible = false // Set to true to show cameras positions
+            scene.add( camerasHelpers[i] )
+        }
+
+        axisHelper = new THREE.AxisHelper( 1 ); // Axis length = 2
+        axisHelper.material.linewidth = 7
+        axisHelper.position.set(0,0,0)
+        scene.add( axisHelper );
+
+
+
+        var geometry, material; // Tmp variables
+
+        /* Load textures and create materials */
+
+        var tex, tex2, tex3, tex_n, materials = []
+        // TODO: Define materials[i] for i=0..3
+        tex = THREE.ImageUtils.loadTexture("textures/Galaxy.jpg");
+        tex2 = THREE.ImageUtils.loadTexture("textures/floor.png");
+        tex3 = THREE.ImageUtils.loadTexture("textures/target.png");
+        materials[0] = new THREE.MeshPhongMaterial( {map: tex, side: THREE.DoubleSide} );
+        materials[1] = new THREE.MeshPhongMaterial( {map: tex2, side: THREE.DoubleSide} );
+        materials[2] = new THREE.MeshPhongMaterial( {map: tex3, side: THREE.DoubleSide} );
+        // TODO: Define multimaterial
+        multimaterial = new THREE.MeshFaceMaterial( materials );
+
+        //floorMesh = new THREE.Mesh(geometry, multimaterial);
+
+        /* Create maze mesh */
+
+        // TODO: replace uniform color by crateUV texture
+        geometry = createXYTile(0, 0, 0, 1);
+        tileMesh = new THREE.Mesh( geometry, multimaterial );
+        scene.add(tileMesh);
+
+        // TODO: add XZ and YZ tiles
+        geometry = createXZTile(0, 0, 0, 2);
+        tileMesh2 = new THREE.Mesh( geometry, multimaterial );
+        scene.add(tileMesh2);
+
+        geometry = createYZTile(0, 0, 0, 2);
+        tileMesh3 = new THREE.Mesh( geometry, multimaterial );
+        scene.add(tileMesh3);
+
+        // TODO: complete createFloorGeometry function
+        geometry = createFloorGeometry(1)
+        floorMesh = new THREE.Mesh( geometry, multimaterial );
+        scene.add( floorMesh );
+
+        // TODO: complete createWallGeometry function
+        geometry = createWallGeometry(2)
+        wallMesh = new THREE.Mesh( geometry, multimaterial );
+        scene.add( wallMesh );
+        
+        geometry = new THREE.PlaneGeometry(w,h);
+        material = new THREE.MeshBasicMaterial({color: 0xffffff, side: THREE.DoubleSide, map: tex});
+        cellingMesh = new THREE.Mesh( geometry, material);
+        cellingMesh.position.x = cellingMesh.position.y = w/2;
+        cellingMesh.position.z = d;
+        scene.add(cellingMesh);
+
+        /* Create hero mesh */
+
+        posx = w/2;
+        posy = h/2;
+
+
+        // TODO: replace box and sphere hero with mesh loaded from JSON file
+        //THREE.Loader.Handlers.add( /\.dds$/i, new THREE.DDSLoader() );
+        var loader = new THREE.OBJMTLLoader();
+        var onJSONLoaded = function ( object )
+        {
+          hero = object;
+          hero.rotation.set(-Math.PI/2, 0, Math.PI, "XYZ");
+          // hero.material.wireframe = true;
+          // hero.scale.set(0.01, 0.01, 0.01);
+          hero.position.set(posx,posy, 0.5);
+          scene.add( hero );
+          console.log(hero);
+          tick();
+		    };
+        loader.load( 'Pistol/Pistol.obj', 'Pistol/Pistol.mtl', onJSONLoaded);
+        // loader.load( '1911/1911.obj', '1911/1911.mtl', onJSONLoaded);
+
+
+        /* Create lights */
+
+        var light = new THREE.AmbientLight( 0x808080 ); // soft white light
+        scene.add( light );
+
+        var directionalLight = new THREE.DirectionalLight( 0xffffff, 0.5 );
+        directionalLight.position.set( 2,2, 5 );
+        scene.add( directionalLight );
+        
+        score_div = document.getElementById("score_div");
+        reload_div = document.getElementById("overlay_reload");
+        
+        for(var i = 0; i < magazine_div.length; i++)
+        {
+          magazine_div[i] = document.getElementById("b" + i)
+        }
+
+        health_bar = document.getElementById("overlay_health");
+        // ctx.drawImage(crosshair, 720, 450);
+        /* Create Controllers */
+
+        initGamepad();
+        initMouse(canvas);
+        initKeyboard(canvas);
+        initGUI()
+
+        // Start rendering loop
+        //tick();
+    }
+
+    function createHUD_crosshair(texture)
+    {
+      /* Create crosshair */
+
+      var material = new THREE.SpriteMaterial({color: 0xffffff, map: crosshair_texture});
+      crosshair = new THREE.Sprite(material);
+      crosshair.position.set( 0, 0, 1 ); // center
+      crosshair.scale.set( canvas.width+50, canvas.height+50, 1 );
+      crosshair.material.opacity = 0.8;
+      crosshair.material.transparent = true;
+      sceneHUD.add(crosshair);
+    }
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+    <div class="container">
+      <canvas id="canvas" width="1440" height="900" onclick="start_stop();"></canvas>
+      <!--<div id="overlay_canvas" width="10" height="10">
+        <canvas id="radar_canvas"></canvas>
+      </div>-->
+      <div id="overlay_health">100</div>
+      <div id="overlay">
+        <div style="display:inline-block;">Score: </div>
+        <div id="score_div" style="display:inline-block;">0</div>
+      </div>
+      <div id="overlay_ammo">
+        <div class="bullet"id="b0"></div>
+        <div class="bullet"id="b1"></div>
+        <div class="bullet"id="b2"></div>
+        <div class="bullet"id="b3"></div>
+        <div class="bullet"id="b4"></div>
+        <div class="bullet"id="b5"></div>
+        <div class="bullet"id="b6"></div>
+        <div class="bullet"id="b7"></div>
+        <div class="bullet"id="b8"></div>
+        <div class="bullet"id="b9"></div>
+        <div class="bullet"id="b10"></div>
+        <div class="bullet"id="b11"></div>
+        <div class="bullet"id="b12"></div>
+        <div class="bullet"id="b13"></div>
+      </div>
+      <div id="overlay_reload">RELOAD!</div>
+    </div>
+    <!-- <br/> -->
+    <!-- <div id="messagebox">---</div> -->
+    <!-- <div>Memo:<br>cameras[0] controls: IJKL for elevation/azimuth, UO for distance to target
+    <br>Hero/cameras[1] controls: arrow keys
+    <br>cameras[2] controls: none
+    <br>Switch between cameras using 'V'</div> -->
+</body>
+
+</html>
